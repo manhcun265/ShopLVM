@@ -17,6 +17,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
 import java.util.UUID;
@@ -34,6 +35,7 @@ public class AuthServiceImpl implements AuthService {
     private final UserMapper userMapper;
 
     @Override
+    @Transactional
     public TokenResponse refreshToken(TokenRefreshRequest request) {
         String refreshToken = request.getRefreshToken();
         Token storedToken = tokenRepository.findByToken(refreshToken)
@@ -47,8 +49,10 @@ public class AuthServiceImpl implements AuthService {
         String newAccessToken = jwtService.generateAccessToken(user);
         String newRefreshToken = jwtService.generateRefreshToken(user);
 
+        // Delete old tokens
         tokenRepository.deleteAllByUser(user);
 
+        // Save new refresh token
         Token newToken = new Token();
         newToken.setToken(newRefreshToken);
         newToken.setUser(user);
@@ -61,10 +65,12 @@ public class AuthServiceImpl implements AuthService {
         return TokenResponse.builder()
                 .accessToken(newAccessToken)
                 .refreshToken(newRefreshToken)
+                .user(userMapper.toUserResponse(user))
                 .build();
     }
 
     @Override
+    @Transactional
     public void logout(String token) {
         Token storedToken = tokenRepository.findByToken(token)
                 .orElseThrow(() -> new RuntimeException("Token not found"));
@@ -76,6 +82,7 @@ public class AuthServiceImpl implements AuthService {
     }
 
     @Override
+    @Transactional
     public void forgotPassword(ForgotPasswordRequest request) {
         User user = userRepository.findByEmail(request.getEmail())
                 .orElseThrow(() -> new RuntimeException("Email does not exist"));
@@ -86,14 +93,16 @@ public class AuthServiceImpl implements AuthService {
         resetToken.setToken(token);
         resetToken.setExpiresAt(LocalDateTime.now().plusMinutes(15));
 
+        // Delete old reset tokens
         passwordResetTokenRepository.deleteAllByUser(user);
         passwordResetTokenRepository.save(resetToken);
-        log.info("Password reset token generated for user: {}", user.getName());
 
-        // (Gợi ý) gửi email tại đây
+        log.info("Password reset token generated for user: {} - Token: {}", user.getName(), token);
+        // TODO: Send email with reset token here
     }
 
     @Override
+    @Transactional
     public void resetPassword(ResetPasswordRequest request) {
         PasswordResetToken resetToken = passwordResetTokenRepository.findByToken(request.getToken())
                 .orElseThrow(() -> new RuntimeException("Invalid token"));
@@ -106,11 +115,13 @@ public class AuthServiceImpl implements AuthService {
         user.setPassword(passwordEncoder.encode(request.getNewPassword()));
         userRepository.save(user);
 
+        // Delete used reset token
         passwordResetTokenRepository.delete(resetToken);
         log.info("Password reset successfully for user: {}", user.getName());
     }
 
     @Override
+    @Transactional
     public AuthResponse register(RegisterRequest request) {
         if (userRepository.findByEmail(request.getEmail()).isPresent()) {
             throw new RuntimeException("Email already exists!");
@@ -123,19 +134,22 @@ public class AuthServiceImpl implements AuthService {
         user.setRole(Role.USER);
 
         userRepository.save(user);
+        log.info("User registered successfully: {}", user.getName());
 
         return generateTokens(user);
     }
 
     @Override
+    @Transactional
     public AuthResponse login(LoginRequest request) {
         User user = userRepository.findByEmail(request.getEmail())
                 .orElseThrow(() -> new RuntimeException("Invalid email or password"));
 
         if (!passwordEncoder.matches(request.getPassword(), user.getPassword())) {
-            throw new RuntimeException("Invalid password");
+            throw new RuntimeException("Invalid email or password");
         }
 
+        log.info("User logged in successfully: {}", user.getName());
         return generateTokens(user);
     }
 
@@ -143,8 +157,10 @@ public class AuthServiceImpl implements AuthService {
         String accessToken = jwtService.generateAccessToken(user);
         String refreshToken = jwtService.generateRefreshToken(user);
 
+        // Delete old tokens
         tokenRepository.deleteAllByUser(user);
 
+        // Save new refresh token
         Token token = new Token();
         token.setToken(refreshToken);
         token.setUser(user);
